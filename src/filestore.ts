@@ -1,10 +1,12 @@
 import * as cheerio from "cheerio";
 import { makeFedlexError } from "./types.js";
 
-// Rate limiter shared with SPARQL (separate bucket for filestore)
-let filestoreTimestamps: number[] = [];
+// Token-bucket rate limiter (separate bucket for filestore), serialized to avoid races.
 const MAX_REQUESTS_PER_SECOND = 10;
 const FETCH_TIMEOUT_MS = 15_000;
+let filestoreTokens = MAX_REQUESTS_PER_SECOND;
+let filestoreLastRefill = Date.now();
+let filestoreQueue: Promise<void> = Promise.resolve();
 
 // Safety caps for fetchMultiPart. Measured ceiling: RS 220 (Code des
 // Obligations, the largest act in the Classified Compilation) is 12 parts
@@ -14,14 +16,24 @@ const FETCH_TIMEOUT_MS = 15_000;
 const MAX_MULTIPART_PARTS = 100;
 const MAX_MULTIPART_BYTES = 100 * 1024 * 1024;
 
-async function rateLimit(): Promise<void> {
+function rateLimit(): Promise<void> {
+  filestoreQueue = filestoreQueue.then(() => rateLimitInner());
+  return filestoreQueue;
+}
+
+async function rateLimitInner(): Promise<void> {
   const now = Date.now();
-  filestoreTimestamps = filestoreTimestamps.filter((t) => now - t < 1000);
-  if (filestoreTimestamps.length >= MAX_REQUESTS_PER_SECOND) {
-    const waitTime = 1000 - (now - filestoreTimestamps[0]!);
+  const elapsed = now - filestoreLastRefill;
+  filestoreTokens = Math.min(MAX_REQUESTS_PER_SECOND, filestoreTokens + (elapsed / 1000) * MAX_REQUESTS_PER_SECOND);
+  filestoreLastRefill = now;
+
+  if (filestoreTokens < 1) {
+    const waitTime = Math.ceil((1 - filestoreTokens) / MAX_REQUESTS_PER_SECOND * 1000);
     await new Promise((resolve) => setTimeout(resolve, waitTime));
+    filestoreTokens = 1;
+    filestoreLastRefill = Date.now();
   }
-  filestoreTimestamps.push(Date.now());
+  filestoreTokens -= 1;
 }
 
 export async function fetchHtml(url: string): Promise<string> {
@@ -313,11 +325,20 @@ export function paginateText(text: string, page: number): { text: string; page: 
     pages.push(currentPage.trim());
   }
 
-  // If no article boundaries were found, split by character count
+  // If no article boundaries were found, split at newline boundaries
   if (pages.length <= 1 && text.length > TARGET_CHARS_PER_PAGE) {
     const chunks: string[] = [];
-    for (let i = 0; i < text.length; i += TARGET_CHARS_PER_PAGE) {
-      chunks.push(text.slice(i, i + TARGET_CHARS_PER_PAGE));
+    let start = 0;
+    while (start < text.length) {
+      let end = start + TARGET_CHARS_PER_PAGE;
+      if (end < text.length) {
+        const newlinePos = text.lastIndexOf("\n", end);
+        if (newlinePos > start) end = newlinePos + 1;
+      } else {
+        end = text.length;
+      }
+      chunks.push(text.slice(start, end));
+      start = end;
     }
     const requestedPage = Math.max(1, Math.min(page, chunks.length));
     return { text: chunks[requestedPage - 1]!, page: requestedPage, totalPages: chunks.length };

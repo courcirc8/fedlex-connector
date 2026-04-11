@@ -500,7 +500,9 @@ function errorResponse(error: FedlexError) {
 }
 
 function isFedlexError(e: unknown): e is FedlexError {
-  return typeof e === "object" && e !== null && "error" in e && (e as any).error === true;
+  if (typeof e !== "object" || e === null) return false;
+  const obj = e as Record<string, unknown>;
+  return obj["error"] === true && typeof obj["code"] === "string" && typeof obj["message"] === "string";
 }
 
 /** Keep only short, useful args for logging (exclude large text payloads if any). */
