@@ -2,3 +2,40 @@ node_modules/
 build/
 .DS_Store
 .claude/
+
+# Variables d'environnement (ne jamais commiter)
+.env
+.env.*
+!.env.example
+
+# Local junk — added by batch sync 2026-05-09
+.DS_Store
+*.env
+*.log
+*.output
+claude-*-cwd
+claude-*/
+noname-qa-v*/
+qa_*.txt
+regression-*.txt
+snap*.txt
+snapshot*.txt
+test-*.txt
+test_*.txt
+pytest_out.txt
+oobelib.log
+.gstack/security-reports/
+*.tmp
+*.bak
+adobegc.log
+ExmanProcessMutex
+gstack-audit-output.txt
+day*.txt
+pr_body.md
+fedlex-connector/
+
+# UUID dirs (Adobe, etc.) and stray test artifacts
+[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]-*/
+AlTest*.out
+AlTest*.err
+baseline.json
