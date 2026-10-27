@@ -15,18 +15,30 @@ const LANG_URI_MAP: Record<Language, string> = {
   it: "http://publications.europa.eu/resource/authority/language/ITA",
 };
 
-// Simple rate limiter: max 10 requests per second
-let requestTimestamps: number[] = [];
+// Token-bucket rate limiter: max 10 requests per second, serialized to avoid races.
 const MAX_REQUESTS_PER_SECOND = 10;
+let sparqlTokens = MAX_REQUESTS_PER_SECOND;
+let sparqlLastRefill = Date.now();
+let sparqlQueue: Promise<void> = Promise.resolve();
 
-async function rateLimit(): Promise<void> {
+function rateLimit(): Promise<void> {
+  sparqlQueue = sparqlQueue.then(() => rateLimitInner());
+  return sparqlQueue;
+}
+
+async function rateLimitInner(): Promise<void> {
   const now = Date.now();
-  requestTimestamps = requestTimestamps.filter((t) => now - t < 1000);
-  if (requestTimestamps.length >= MAX_REQUESTS_PER_SECOND) {
-    const waitTime = 1000 - (now - requestTimestamps[0]!);
+  const elapsed = now - sparqlLastRefill;
+  sparqlTokens = Math.min(MAX_REQUESTS_PER_SECOND, sparqlTokens + (elapsed / 1000) * MAX_REQUESTS_PER_SECOND);
+  sparqlLastRefill = now;
+
+  if (sparqlTokens < 1) {
+    const waitTime = Math.ceil((1 - sparqlTokens) / MAX_REQUESTS_PER_SECOND * 1000);
     await new Promise((resolve) => setTimeout(resolve, waitTime));
+    sparqlTokens = 1;
+    sparqlLastRefill = Date.now();
   }
-  requestTimestamps.push(Date.now());
+  sparqlTokens -= 1;
 }
 
 interface SparqlBinding {
@@ -107,6 +119,7 @@ export async function getLatestConsolidation(
   abstractUri: string,
   targetDate?: string
 ): Promise<ConsolidationInfo | null> {
+  validateFedlexUri(abstractUri);
   const today = targetDate || new Date().toISOString().split("T")[0]!;
 
   const query = `
@@ -137,6 +150,7 @@ export async function getFilestoreHtmlUrls(
   consolidationUri: string,
   language: Language
 ): Promise<string[]> {
+  validateFedlexUri(consolidationUri);
   const query = `
     PREFIX jolux: <http://data.legilux.public.lu/resource/ontology/jolux#>
     SELECT ?url WHERE {
@@ -220,6 +234,7 @@ export async function listAmendments(
   since: string,
   language: Language
 ): Promise<Amendment[]> {
+  validateFedlexUri(abstractUri);
   const query = `
     PREFIX jolux: <http://data.legilux.public.lu/resource/ontology/jolux#>
     PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
@@ -248,7 +263,24 @@ function escapeSparql(str: string): string {
     .replace(/"/g, '\\"')
     .replace(/\n/g, "\\n")
     .replace(/\r/g, "\\r")
-    .replace(/\t/g, "\\t");
+    .replace(/\t/g, "\\t")
+    .replace(/</g, "\\u003C")
+    .replace(/>/g, "\\u003E")
+    .replace(/\{/g, "\\u007B")
+    .replace(/\}/g, "\\u007D");
+}
+
+const FEDLEX_URI_PATTERN = /^https:\/\/fedlex\.data\.admin\.ch\//;
+
+function validateFedlexUri(uri: string): string {
+  if (!FEDLEX_URI_PATTERN.test(uri)) {
+    throw makeFedlexError(
+      "SPARQL_UNAVAILABLE",
+      `Unexpected URI format: ${uri}`,
+      ["This may indicate a data integrity issue. Try again or use a different RS number."]
+    );
+  }
+  return uri;
 }
 
 function stripHtmlTags(str: string): string {
